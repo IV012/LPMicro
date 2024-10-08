@@ -17,7 +17,7 @@ Dai Y, Qian Y, Qu Y, et al. LP-Micro Offers Interpretable Disease Outcome Predic
 
 ```r
 install.packages("devtools")
-devtools:install_github("IV012/LPMicro")
+devtools::install_github("IV012/LPMicro")
 ```
 
 ## Usage

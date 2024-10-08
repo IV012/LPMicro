@@ -46,9 +46,9 @@ cv_fit <- function(trainx, trainy, valx, valy, testx, testy,
     }
 
     trainset <- deepTL::importDnnet(
-        rbind(trainx, valx)[, feature_set[p_mod]],
+        rbind(trainx, valx)[, feature_set[[p_mod]]],
         c(trainy, valy))
-    testset <- deepTL::importDnnet(testx[, feature_set[p_mod]], testy)
+    testset <- deepTL::importDnnet(testx[, feature_set[[p_mod]]], testy)
     full_mod <- do.call(
         deepTL::mod_permfit,
         c(list(model.type = type, object = trainset), mod_args)

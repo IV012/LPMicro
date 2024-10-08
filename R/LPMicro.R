@@ -8,10 +8,13 @@
 #' the microbial taxa of the columns in x.
 #' @param ord The order of splines. Default 3.
 #' @param spline  The spline type. Default natural splines.
-#' @param lambda  The penalty parameter. Default NULL.
-#' @param intercept Include the intercept or not. Default FALSE.
+#' @param lambda  The penalty parameter (can be a vector). Default NULL.
+#' @param intercept Whether the intercept is penalyzed or not. Default FALSE.
+#' @param reduce_rank Whether a check of rank is performed before screening.
+#' Defaul TRUE.
 #'
-#' @return Return the index of screened features.
+#' @return Return a list of screened feature indexes with the same length as
+#' lambda.
 #'
 #' @importFrom grplasso grplasso
 #' @importFrom grplasso lambdamax
@@ -21,7 +24,8 @@
 #' @export
 screen_taxa <- function(x, y, idx, ord = 3,
                            spline = c("natural", "b-spline")[1],
-                           lambda = NULL, intercept = FALSE) {
+                           lambda = NULL, intercept = FALSE,
+                           reduce_rank = TRUE) {
   n <- dim(x)[1]
   p <- dim(x)[2]
   y <- as.numeric(y)
@@ -39,7 +43,8 @@ screen_taxa <- function(x, y, idx, ord = 3,
   } else {
     stop("Spline not supported. Please wait for future updates.")
   }
-
+  x <- cbind(1, x)
+  idx_dat <- idx
   if (intercept) {
     idx <- c(0, rep(idx, ord))
   } else {
@@ -50,19 +55,49 @@ screen_taxa <- function(x, y, idx, ord = 3,
   } else {
     model <- grplasso::LinReg()
   }
-
-  if (is.null(lambda)) {
-    lambda <- grplasso::lambdamax(x, y = y, index = idx, penscale = sqrt,
-                        model = model) * 0.5
+  if (reduce_rank) {
+    rr <- rep(TRUE, length(idx))
+    for (k in unique(idx[!is.na(idx)])){
+      keepx <- idx == k
+      keepx[is.na(keepx)] <- FALSE
+      grp <- x[, keepx]
+      if (Matrix::rankMatrix(as.matrix(grp)) < ncol(as.matrix(grp))) {
+        q <- qr(grp)
+        rr[which(idx == k)[-q$pivot[seq(q$rank)]]] <- FALSE
+        grp <- grp[, q$pivot[seq(q$rank)]]
+        if (Matrix::rankMatrix(as.matrix(grp)) < ncol(as.matrix(grp))) {
+          print(colnames(grp))
+          rr[which(idx == k)] <- FALSE
+        }
+      }
+    }
+    rr[is.na(idx)] <- FALSE
+    rr[1] <- TRUE
   }
-  grp_fit <- grplasso::grplasso(x, y, index = idx, model = model,
+  if (is.null(lambda)) {
+    lambda <- grplasso::lambdamax(x[, rr], y = y, index = idx[rr],
+       penscale = sqrt, model = model) * 0.5
+  }
+  grp_fit <- grplasso::grplasso(x[, rr], y, index = idx[rr], model = model,
                           penscale = sqrt, lambda = lambda,
                           control = grplasso::grpl.control(
                             update.hess = "lambda", trace = 0))
-  coef.lasso <- grp_fit$coefficients
-  feature <- which(coef.lasso != 0) - 1
-
-  return(feature)
+  feature_set <- list()
+  idx_rr <- idx[rr]
+  if (length(lambda) == 1) {
+    coef.lasso <- grp_fit$coefficients
+    taxa <- idx_rr[which(coef.lasso != 0)]
+    taxa <- unique(taxa[-1])
+    feature_set[[1]] <- which(idx_dat %in% taxa)
+  } else {
+    for (k in seq_along(lambda)) {
+      coef.lasso <- grp_fit$coefficients
+      taxa <- idx_rr[which(coef.lasso[, k] != 0)]
+      taxa <- unique(taxa[-1])
+      feature_set[[k]] <- which(idx_dat %in% taxa)
+    }
+  }
+  return(feature_set)
 }
 
 #' Cumulative Prediction
@@ -119,7 +154,7 @@ cumulative_predict <- function(
     if (screen) {
       feature_set <- screen_taxa(x, y, idx, ...)
     }else {
-      feature_set <- seq(dim(x)[2])
+      feature_set <- list(seq(dim(x)[2]))
     }
 
     result[i, ] <- cv_fit(trainx, trainy, valx, valy, testx, testy,
@@ -205,7 +240,7 @@ taxa_interpret <- function(x, y, idx_tx, idx_tp, mod_args,
      k_fold = 5, screen = TRUE, ...) {
 
   if (screen) {
-    feature <- screen_taxa(x, y, idx_tx, ...)
+    feature <- screen_taxa(x, y, idx_tx, ...)[[1]]
   } else {
     feature <- seq(dim(x)[2])
   }
