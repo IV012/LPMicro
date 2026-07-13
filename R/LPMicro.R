@@ -35,10 +35,16 @@ screen_taxa <- function(x, y, idx, ord = 3,
   if (p != length(idx)) {
     stop("The number of variables does not match in x and idx.")
   }
+  if (length(ord) != 1 || ord < 1 || ord != floor(ord)) {
+    stop("ord must be a positive integer.")
+  }
 
   if (spline == "natural") {
-    for (m in 1:ord){
-      x <- cbind(x, x^m)
+    x0 <- x
+    if (ord > 1) {
+      for (m in seq.int(2, ord)) {
+        x <- cbind(x, x0^m)
+      }
     }
   } else {
     stop("Spline not supported. Please wait for future updates.")
@@ -55,8 +61,8 @@ screen_taxa <- function(x, y, idx, ord = 3,
   } else {
     model <- grplasso::LinReg()
   }
+  rr <- rep(TRUE, length(idx))
   if (reduce_rank) {
-    rr <- rep(TRUE, length(idx))
     for (k in unique(idx[!is.na(idx)])){
       keepx <- idx == k
       keepx[is.na(keepx)] <- FALSE
@@ -113,6 +119,10 @@ screen_taxa <- function(x, y, idx, ord = 3,
 #' @param plot.result Whether to plot the result. Default TRUE.
 #' @param type Type of prediction, depending on continuous outcomes or
 #' binary outcomes. Default "regression".
+#' @param subject_id Optional subject identifier vector. When provided, all
+#' rows from the same subject are kept in the same train, validation, or test
+#' partition. By default, each row is treated as one subject, matching the
+#' manuscript's wide longitudinal design matrix.
 #' @param ... Other arguments to be passed to screen_taxa.
 #'
 #' @return Return a dataframe, whether the first two columns record the
@@ -123,9 +133,13 @@ screen_taxa <- function(x, y, idx, ord = 3,
 cumulative_predict <- function(
       taxa_list, mod_args, screen = TRUE, ratio = c(0.7, 0.1, 0.2),
       plot.result = TRUE,
-      type = c("regression", "binary-classification")[1], ...) {
+      type = c("regression", "binary-classification")[1],
+      subject_id = NULL, ...) {
 
   n_tp <- length(taxa_list)
+  if (n_tp < 1) {
+    stop("taxa_list must contain at least one dataset.")
+  }
   result <- matrix(NA, n_tp, 2)
   result <- as.data.frame(result)
   if (type == "binary-classification") {
@@ -134,31 +148,54 @@ cumulative_predict <- function(
     colnames(result) <- c("mse", "pcc")
   }
 
+  first_x <- taxa_list[[1]]$x
+  first_y <- taxa_list[[1]]$y
+  if (is.null(first_x) || is.null(first_y)) {
+    stop("Each taxa_list element must contain x and y.")
+  }
+  n <- dim(first_x)[1]
+  if (is.null(subject_id) && !is.null(taxa_list[[1]]$subject_id)) {
+    subject_id <- taxa_list[[1]]$subject_id
+  }
+  split_idx <- .subject_split(n, ratio, subject_id, validation = TRUE)
+
   i <- 1
   for (df in taxa_list) {
     x <- df$x
     y <- df$y
     idx <- df$idx
-    n <- dim(x)[1]
+    if (is.null(x) || is.null(y)) {
+      stop("Each taxa_list element must contain x and y.")
+    }
+    if (dim(x)[1] != n || length(y) != n) {
+      stop("All taxa_list elements must contain the same subjects in the same row order.")
+    }
 
-    tr_idx <- sample(seq(n), n * ratio[1], replace = FALSE)
-    val_idx <- sample(seq(n)[-tr_idx], n * ratio[2], replace = FALSE)
-    trainx <- x[tr_idx, ]
+    tr_idx <- split_idx$train
+    val_idx <- split_idx$validation
+    test_idx <- split_idx$test
+    trainx <- x[tr_idx, , drop = FALSE]
     trainy <- y[tr_idx]
-    valx <- x[val_idx, ]
-    valy <- y[valy]
-    testx <- x[-c(tr_idx, val_idx), ]
-    testy <- y[-c(tr_idx, val_idx)]
+    valx <- x[val_idx, , drop = FALSE]
+    valy <- y[val_idx]
+    testx <- x[test_idx, , drop = FALSE]
+    testy <- y[test_idx]
     validate <- ifelse(length(val_idx) >= 3, TRUE, FALSE)
 
     if (screen) {
-      feature_set <- screen_taxa(x, y, idx, ...)
+      if (is.null(idx)) {
+        stop("idx must be provided in each taxa_list element when screen = TRUE.")
+      }
+      feature_set <- screen_taxa(trainx, trainy, idx, ...)
     }else {
       feature_set <- list(seq(dim(x)[2]))
     }
 
     result[i, ] <- cv_fit(trainx, trainy, valx, valy, testx, testy,
-                          validate, feature_set, mod_args, type)[1:2]
+                          feature_set = feature_set,
+                          mod_args = mod_args,
+                          validate = validate,
+                          type = type)[1:2]
     i <- i + 1
   }
 
@@ -175,6 +212,9 @@ cumulative_predict <- function(
 #' @param ratio The proportion of training data. Default 0.8.
 #' @param type Type of prediction, depending on continuous outcomes or
 #' binary outcomes. Default "regression".
+#' @param subject_id Optional subject identifier vector. When provided, all
+#' rows from the same subject are kept in the same train or test partition.
+#' By default, each row is treated as one subject.
 #'
 #' @return Return a dataframe, whether the first two columns record the
 #' prediction accuracy (MSE, PCC for regression, ACC and AUC for
@@ -183,9 +223,13 @@ cumulative_predict <- function(
 #' @export
 visit_predict <-  function(
       taxa_list, mod_args, plot.result = TRUE, ratio = 0.8,
-      type = c("regression", "binary-classification")[1]) {
+      type = c("regression", "binary-classification")[1],
+      subject_id = NULL) {
 
   n_tp <- length(taxa_list)
+  if (n_tp < 1) {
+    stop("taxa_list must contain at least one dataset.")
+  }
   result <- matrix(NA, n_tp, 2)
   result <- as.data.frame(result)
   if (type == "binary-classification") {
@@ -194,17 +238,34 @@ visit_predict <-  function(
     colnames(result) <- c("mse", "pcc")
   }
 
+  first_x <- taxa_list[[1]]$x
+  first_y <- taxa_list[[1]]$y
+  if (is.null(first_x) || is.null(first_y)) {
+    stop("Each taxa_list element must contain x and y.")
+  }
+  n <- dim(first_x)[1]
+  if (is.null(subject_id) && !is.null(taxa_list[[1]]$subject_id)) {
+    subject_id <- taxa_list[[1]]$subject_id
+  }
+  split_idx <- .subject_split(n, ratio, subject_id, validation = FALSE)
+
   i <- 1
   for (df in taxa_list) {
     x <- df$x
     y <- df$y
-    n <- dim(x)[1]
+    if (is.null(x) || is.null(y)) {
+      stop("Each taxa_list element must contain x and y.")
+    }
+    if (dim(x)[1] != n || length(y) != n) {
+      stop("All taxa_list elements must contain the same subjects in the same row order.")
+    }
 
-    tr_idx <- sample(seq(n), n * ratio, replace = FALSE)
-    trainx <- x[tr_idx, ]
+    tr_idx <- split_idx$train
+    test_idx <- split_idx$test
+    trainx <- x[tr_idx, , drop = FALSE]
     trainy <- y[tr_idx]
-    testx <- x[-tr_idx, ]
-    testy <- y[-tr_idx]
+    testx <- x[test_idx, , drop = FALSE]
+    testy <- y[test_idx]
 
     result[i, ] <- visit_fit(trainx, trainy, testx, testy, mod_args, type)
 

@@ -1,3 +1,67 @@
+.subject_split <- function(n, ratio, subject_id = NULL, validation = FALSE) {
+    if (is.null(subject_id)) {
+        subject_id <- seq_len(n)
+    }
+    if (length(subject_id) != n) {
+        stop("subject_id must have length equal to the number of rows in x.")
+    }
+    if (anyNA(subject_id)) {
+        stop("subject_id cannot contain missing values.")
+    }
+    if (!is.numeric(ratio) || anyNA(ratio) || any(ratio < 0)) {
+        stop("ratio must be a non-missing numeric vector with non-negative values.")
+    }
+
+    subjects <- unique(subject_id)
+    n_subjects <- length(subjects)
+    subject_order <- sample(subjects, n_subjects, replace = FALSE)
+
+    take_subjects <- function(from, to) {
+        if (to < from) {
+            return(subject_order[0])
+        }
+        subject_order[seq.int(from, to)]
+    }
+
+    if (validation) {
+        if (length(ratio) != 3) {
+            stop("ratio must contain training, validation, and testing proportions.")
+        }
+        if (sum(ratio) <= 0 || sum(ratio) > 1 + sqrt(.Machine$double.eps)) {
+            stop("ratio must sum to a value in (0, 1].")
+        }
+        n_train <- floor(n_subjects * ratio[1])
+        n_val <- floor(n_subjects * ratio[2])
+        n_test <- n_subjects - n_train - n_val
+        if (n_train < 1 || n_test < 1) {
+            stop("ratio must allocate at least one subject to training and testing.")
+        }
+
+        train_subjects <- take_subjects(1, n_train)
+        val_subjects <- take_subjects(n_train + 1, n_train + n_val)
+        test_subjects <- take_subjects(n_train + n_val + 1, n_subjects)
+    } else {
+        if (length(ratio) != 1 || ratio <= 0 || ratio >= 1) {
+            stop("ratio must be a single training proportion between 0 and 1.")
+        }
+        n_train <- floor(n_subjects * ratio)
+        n_test <- n_subjects - n_train
+        if (n_train < 1 || n_test < 1) {
+            stop("ratio must allocate at least one subject to training and testing.")
+        }
+
+        train_subjects <- take_subjects(1, n_train)
+        val_subjects <- subject_order[0]
+        test_subjects <- take_subjects(n_train + 1, n_subjects)
+    }
+
+    list(
+        train = which(subject_id %in% train_subjects),
+        validation = which(subject_id %in% val_subjects),
+        test = which(subject_id %in% test_subjects)
+    )
+}
+
 #' Helper function for cumulative prediction.
 #'
 #' @importFrom deepTL importDnnet
@@ -7,10 +71,13 @@ cv_fit <- function(trainx, trainy, valx, valy, testx, testy,
                     feature_set, mod_args, validate = TRUE,
                     type = c("regression", "binary-classification")[1]) {
     result <- rep(NA, 3)
-    if (type == "binay-classification") {
+    if (type == "binary-classification") {
         trainy <- as.factor(trainy)
-        valy <- as.factor(valy)
-        testy <- as.factor(testy)
+        if (length(levels(trainy)) != 2) {
+            stop("Training data must contain two outcome classes.")
+        }
+        valy <- factor(valy, levels = levels(trainy))
+        testy <- factor(testy, levels = levels(trainy))
         names(result) <- c("acc", "auc", "feature")
     } else {
         names(result) <- c("mse", "pcc", "feature")
@@ -20,8 +87,13 @@ cv_fit <- function(trainx, trainy, valx, valy, testx, testy,
         val_acc <- rep(NA, length(feature_set))
         k <- 1
         for (j in feature_set) {
-            trainset <- deepTL::importDnnet(trainx[, j], trainy)
-            valset <- deepTL::importDnnet(valx[, j], valy)
+            if (length(j) == 0) {
+                val_acc[k] <- Inf
+                k <- k + 1
+                next
+            }
+            trainset <- deepTL::importDnnet(trainx[, j, drop = FALSE], trainy)
+            valset <- deepTL::importDnnet(valx[, j, drop = FALSE], valy)
             full_mod <- do.call(
                 deepTL::mod_permfit,
                 c(list(model.type = type, object = trainset), mod_args)
@@ -33,7 +105,7 @@ cv_fit <- function(trainx, trainy, valx, valy, testx, testy,
                 model.type = type
             )
             if (type == "binary-classification") {
-                predy <- ifelse(predy >= .5, levels(trainy)[1], levels(trainy)[2])
+                predy <- ifelse(predy >= .5, levels(trainy)[2], levels(trainy)[1])
                 val_acc[k] <- -mean(valy == predy)
             } else {
                 val_acc[k] <- mean((valy - predy)^2)
@@ -45,10 +117,14 @@ cv_fit <- function(trainx, trainy, valx, valy, testx, testy,
         p_mod <- 1
     }
 
+    selected <- feature_set[[p_mod]]
+    if (length(selected) == 0) {
+        stop("No features were available for model fitting.")
+    }
     trainset <- deepTL::importDnnet(
-        rbind(trainx, valx)[, feature_set[[p_mod]]],
+        rbind(trainx, valx)[, selected, drop = FALSE],
         c(trainy, valy))
-    testset <- deepTL::importDnnet(testx[, feature_set[[p_mod]]], testy)
+    testset <- deepTL::importDnnet(testx[, selected, drop = FALSE], testy)
     full_mod <- do.call(
         deepTL::mod_permfit,
         c(list(model.type = type, object = trainset), mod_args)
@@ -61,9 +137,12 @@ cv_fit <- function(trainx, trainy, valx, valy, testx, testy,
     )
 
     if (type == "binary-classification") {
-        predy <- ifelse(predy >= .5, levels(trainy)[1], levels(trainy)[2])
+        pred_prob <- as.numeric(predy)
+        predy <- ifelse(pred_prob >= .5, levels(trainy)[2], levels(trainy)[1])
         result[1] <- mean(testy == predy)
-        result[2] <- suppressMessages(pROC::auc(pROC::roc(testy, predy)))
+        result[2] <- suppressMessages(
+            as.numeric(pROC::auc(pROC::roc(testy, pred_prob, quiet = TRUE)))
+        )
     } else {
         result[1] <- mean((testy - predy)^2)
         result[2] <- cor(testy, predy, method = "pearson")
@@ -79,17 +158,19 @@ cv_fit <- function(trainx, trainy, valx, valy, testx, testy,
 #' @importFrom deepTL predict_mod_permfit
 visit_fit <- function(trainx, trainy, testx, testy, mod_args,
                     type = c("regression", "binary-classification")[1]) {
+    result <- rep(NA, 2)
+    if (type == "binary-classification") {
+        trainy <- as.factor(trainy)
+        if (length(levels(trainy)) != 2) {
+            stop("Training data must contain two outcome classes.")
+        }
+        testy <- factor(testy, levels = levels(trainy))
+        names(result) <- c("acc", "auc")
+    } else {
+        names(result) <- c("mse", "pcc")
+    }
     trainset <- deepTL::importDnnet(trainx, trainy)
     testset <- deepTL::importDnnet(testx, testy)
-    result <- rep(NA, 2)
-    if (type == "binay-classification") {
-        trainy <- as.factor(trainy)
-        valy <- as.factor(valy)
-        testy <- as.factor(testy)
-        names(result) <- c("acc", "auc", "feature")
-    } else {
-        names(result) <- c("mse", "pcc", "feature")
-    }
 
     full_mod <- do.call(
         deepTL::mod_permfit,
@@ -103,9 +184,12 @@ visit_fit <- function(trainx, trainy, testx, testy, mod_args,
     )
 
     if (type == "binary-classification") {
-        predy <- ifelse(predy >= .5, levels(trainy)[1], levels(trainy)[2])
+        pred_prob <- as.numeric(predy)
+        predy <- ifelse(pred_prob >= .5, levels(trainy)[2], levels(trainy)[1])
         result[1] <- mean(testy == predy)
-        result[2] <- suppressMessages(pROC::auc(pROC::roc(testy, predy)))
+        result[2] <- suppressMessages(
+            as.numeric(pROC::auc(pROC::roc(testy, pred_prob, quiet = TRUE)))
+        )
     } else {
         result[1] <- mean((testy - predy)^2)
         result[2] <- cor(testy, predy, method = "pearson")

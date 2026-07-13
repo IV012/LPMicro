@@ -8,7 +8,7 @@ This GitHub repository includes the R code for `LP-Micro`, a machine learning-ba
 
 Yifan Dai: yfd@unc.edu, Di Wu: did@email.unc.edu
 
-Dai Y, Qian Y, Qu Y, et al. LP-Micro Offers Interpretable Disease Outcome Prediction by Leveraging Microbial Biomarkers and Their Time-Varying Effects. *bioRxiv.* **2024**
+Yifan Dai, Yunzhi Qian, Yixiang Qu, Wyliena Guan, Jialiu Xie, Duan Wang, Catherine Butler, Stuart Dashper, Ian Carroll, Kimon Divaris, Yufeng Liu, Di Wu, Decoding longitudinal microbiome trajectories: an interpretable machine learning approach for biomarker discovery and prediction, Briefings in Bioinformatics, Volume 26, Issue 4, July 2025, bbaf374
 
 ## Installation
 
@@ -117,9 +117,10 @@ records the predictive accuracy up-to or of each visit.
 
 ```r
 # taxa_list represents the microbial abundance measured up to a time point
+idx <- rep(1:p, q)
 taxa_list <- list()
 for(t in 1:q){
-  taxa_list[[t]] <- list(x=x[, 1:(p*t)], y=y)
+  taxa_list[[t]] <- list(x=x[, 1:(p*t)], y=y, idx=idx[1:(p*t)])
 }
 
 cumulative_predict(taxa_list, mod_args, type="regression")
@@ -132,6 +133,11 @@ for(t in 1:q){
 
 visit_predict(taxa_list, mod_args, type="regression")
 ```
+
+The prediction functions split subjects, not individual longitudinal
+measurements. In the wide format shown above, each row is one subject. If your
+input has multiple rows per subject, pass a `subject_id` vector so repeated rows
+from the same subject remain in the same train, validation, or test partition.
 
 Finally, we present the feature and visit importance from permutation importance test.
 
